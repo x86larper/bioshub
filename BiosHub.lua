@@ -31,8 +31,9 @@ local function pressKey(key)
     VirtualInputManager:SendKeyEvent(false, key, false, game)
 end
 local function commF(...)
+    local args = { ... }
     local ok, res = pcall(function()
-        return ReplicatedStorage.Remotes.CommF_:InvokeServer(...)
+        return ReplicatedStorage.Remotes.CommF_:InvokeServer(unpack(args))
     end)
     return ok and res or nil
 end
