@@ -193,6 +193,10 @@ MoveBox:AddSlider("SoruDelay", {
 })
 MoveBox:AddToggle("WalkWater", { Text = "Walk on Water", Default = false })
 MoveBox:AddToggle("WalkLava", { Text = "Walk on Lava", Default = false })
+MoveBox:AddSlider("WaterHeight", {
+    Text = "Altura da água (ajuste)", Default = 113, Min = 80, Max = 200, Rounding = 0,
+})
+local WalkStatus = MoveBox:AddLabel("Walk: desligado")
 MoveBox:AddToggle("Unbreakable", { Text = "Unbreakable Skills (anti-stun)", Default = false })
 
 bind(RunService.Heartbeat, function(dt)
@@ -359,13 +363,36 @@ loop("InfSoru", 0.05, function()
 end)
 bind(LocalPlayer.CharacterAdded, function() soruTables = {} end, "SoruChar")
 
--- Walk on Water / Lava (plataforma invisivel sob os pes)
+-- Walk on Water / Lava
+local lastWalk = ""
+local function setWalk(t)
+    if t ~= lastWalk then
+        lastWalk = t
+        WalkStatus:SetText(t)
+    end
+end
+
 local surfPlat
+local waterOrig
+local lavaParts = {}
 local lavaTouched = {}
+
 local function hidePlat()
     if surfPlat then
         pcall(function() surfPlat:Destroy() end)
         surfPlat = nil
+    end
+end
+local function restoreWater()
+    if waterOrig then
+        local d = waterOrig
+        if d.part and d.part.Parent then
+            pcall(function()
+                d.part.Size = d.Size
+                d.part.CanCollide = d.CanCollide
+            end)
+        end
+        waterOrig = nil
     end
 end
 local function restoreLava()
@@ -375,77 +402,234 @@ local function restoreLava()
     lavaTouched = {}
 end
 local function isLavaPart(part)
-    if not part or not part:IsA("BasePart") then return false end
+    if not part:IsA("BasePart") then return false end
     if part.Name:lower():find("lava") then return true end
     return part.Material == Enum.Material.CrackedLava or part.Material == Enum.Material.Magma
 end
-local function isWaterHit(res)
-    if res.Material == Enum.Material.Water then return true end
-    local n = res.Instance and res.Instance.Name:lower() or ""
-    return n:find("water") ~= nil
+local function findWaterPlane()
+    local map = workspace:FindFirstChild("Map")
+    return map and map:FindFirstChild("WaterBase-Plane")
+end
+
+-- guarda as partes de lava do mapa (varredura leve a cada 3s)
+loop("LavaScan", 3, function()
+    if not T("WalkLava") then return end
+    local map = workspace:FindFirstChild("Map")
+    if not map then return end
+    local list, n = {}, 0
+    for _, v in ipairs(map:GetDescendants()) do
+        n = n + 1
+        if n % 3000 == 0 then task.wait() end
+        if isLavaPart(v) then list[#list + 1] = v end
+    end
+    lavaParts = list
+end)
+
+local function placePlat(root, topY)
+    if not surfPlat or not surfPlat.Parent then
+        surfPlat = Instance.new("Part")
+        surfPlat.Name = "BiosPlatform"
+        surfPlat.Anchored = true
+        surfPlat.CanCollide = true
+        surfPlat.CanQuery = false
+        surfPlat.Transparency = 1
+        surfPlat.Size = Vector3.new(24, 1, 24)
+        surfPlat.Parent = workspace
+    end
+    surfPlat.CFrame = CFrame.new(root.Position.X, topY - 0.5, root.Position.Z)
 end
 
 bind(RunService.Heartbeat, function()
     local wantW, wantL = T("WalkWater"), T("WalkLava")
+    if not wantW then restoreWater() end
+    if not wantL and next(lavaTouched) then restoreLava() end
     if not wantW and not wantL then
         if surfPlat then hidePlat() end
-        if next(lavaTouched) then restoreLava() end
+        setWalk("Walk: desligado")
         return
     end
     local root, char = getRoot(), getChar()
     if not root or not char then return end
 
-    local params = RaycastParams.new()
-    params.FilterType = Enum.RaycastFilterType.Exclude
-    params.FilterDescendantsInstances = surfPlat and { char, surfPlat } or { char }
-    params.IgnoreWater = false
-    local res = workspace:Raycast(root.Position, Vector3.new(0, -50, 0), params)
-
     local topY
-    if res then
-        if wantW and isWaterHit(res) then
-            topY = res.Position.Y
-        elseif wantL and isLavaPart(res.Instance) then
-            topY = res.Position.Y + 2 -- flutua um pouco acima da lava
-            if lavaTouched[res.Instance] == nil then
-                lavaTouched[res.Instance] = res.Instance.CanTouch
-                res.Instance.CanTouch = false
+    local status = {}
+
+    if wantW then
+        local wp = findWaterPlane()
+        if wp then
+            -- metodo principal: engrossa o plano de agua do mapa e deixa solido
+            if not waterOrig or waterOrig.part ~= wp then
+                restoreWater()
+                waterOrig = { part = wp, Size = wp.Size, CanCollide = wp.CanCollide }
+            end
+            local h = O("WaterHeight") or 113
+            if wp.Size.Y ~= h then
+                wp.Size = Vector3.new(wp.Size.X, h, wp.Size.Z)
+            end
+            if not wp.CanCollide then wp.CanCollide = true end
+            table.insert(status, "água: plano ok")
+        else
+            -- plano B: agua de terreno (plataforma sob os pes)
+            local params = RaycastParams.new()
+            params.FilterType = Enum.RaycastFilterType.Exclude
+            params.FilterDescendantsInstances = surfPlat and { char, surfPlat } or { char }
+            params.IgnoreWater = false
+            local res = workspace:Raycast(root.Position, Vector3.new(0, -50, 0), params)
+            if res and res.Material == Enum.Material.Water then
+                topY = res.Position.Y
+                table.insert(status, "água: terreno")
+            else
+                table.insert(status, "água: não encontrada")
             end
         end
     end
 
-    if topY then
-        if not surfPlat or not surfPlat.Parent then
-            surfPlat = Instance.new("Part")
-            surfPlat.Name = "BiosPlatform"
-            surfPlat.Anchored = true
-            surfPlat.CanCollide = true
-            surfPlat.CanQuery = false
-            surfPlat.Transparency = 1
-            surfPlat.Size = Vector3.new(24, 1, 24)
-            surfPlat.Parent = workspace
+    if wantL then
+        local best
+        for _, part in ipairs(lavaParts) do
+            if part.Parent then
+                local lp = part.CFrame:PointToObjectSpace(root.Position)
+                local half = part.Size * 0.5
+                if math.abs(lp.X) <= half.X + 2 and math.abs(lp.Z) <= half.Z + 2
+                    and lp.Y > -half.Y - 4 and lp.Y < half.Y + 30 then
+                    local top = (part.CFrame * Vector3.new(0, half.Y, 0)).Y
+                    if not best or top > best then best = top end
+                    if lavaTouched[part] == nil then
+                        lavaTouched[part] = part.CanTouch
+                        part.CanTouch = false
+                    end
+                end
+            end
         end
-        surfPlat.CFrame = CFrame.new(root.Position.X, topY - 0.5, root.Position.Z)
+        if best then
+            local want = best + 2
+            topY = topY and math.max(topY, want) or want
+            table.insert(status, "lava: sobre lava")
+        else
+            table.insert(status, "lava: " .. #lavaParts .. " partes")
+        end
+    end
+    setWalk("Walk: " .. table.concat(status, " | "))
+
+    if topY then
+        placePlat(root, topY)
     else
         hidePlat()
     end
 end, "SurfaceWalk")
 
--- Unbreakable Skills: tira stun/ragdoll para a skill nao ser interrompida
+-- Unbreakable Skills: tira stun/ragdoll/knockback do cliente
+local STUN_WORDS = { "stun", "ragdoll", "knock", "freeze", "frozen", "stagger", "flinch" }
+local function isStunName(name)
+    local n = name:lower()
+    for _, w in ipairs(STUN_WORDS) do
+        if n:find(w, 1, true) then return true end
+    end
+    return false
+end
+
 bind(RunService.Heartbeat, function()
     if not T("Unbreakable") then return end
-    local char, hum = getChar(), getHum()
+    local char, hum, root = getChar(), getHum(), getRoot()
     if not char or not hum then return end
-    local stun = char:FindFirstChild("Stun")
-    if stun and stun:IsA("ValueBase") and stun.Value ~= 0 then
-        pcall(function() stun.Value = 0 end)
+
+    for _, c in ipairs(char:GetChildren()) do
+        if isStunName(c.Name) then
+            if c:IsA("BoolValue") then
+                if c.Value then c.Value = false end
+            elseif c:IsA("NumberValue") or c:IsA("IntValue") then
+                if c.Value ~= 0 then c.Value = 0 end
+            elseif c:IsA("BodyVelocity") or c:IsA("BodyPosition") or c:IsA("BodyGyro") or c:IsA("BodyForce") then
+                c:Destroy()
+            end
+        end
+    end
+    for name, val in pairs(char:GetAttributes()) do
+        if isStunName(tostring(name)) then
+            if val == true then
+                char:SetAttribute(name, false)
+            elseif type(val) == "number" and val ~= 0 then
+                char:SetAttribute(name, 0)
+            end
+        end
     end
     pcall(function()
         hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
         hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
     end)
     if hum.PlatformStand and not T("Fly") then hum.PlatformStand = false end
+    if root and root.Anchored then root.Anchored = false end
 end, "Unbreakable")
+
+-- Debug: copia informacoes para eu ajustar o script
+local function fmtV(v) return string.format("%.1f, %.1f, %.1f", v.X, v.Y, v.Z) end
+local function partInfo(part)
+    return string.format("%s [%s] pos(%s) size(%s) CanCollide=%s CanQuery=%s Material=%s",
+        part:GetFullName(), part.ClassName, fmtV(part.Position), fmtV(part.Size),
+        tostring(part.CanCollide), tostring(part.CanQuery), tostring(part.Material))
+end
+local function copyDebug()
+    local out = {}
+    local function add(t) table.insert(out, t) end
+    local char, root, hum = getChar(), getRoot(), getHum()
+
+    add("== Jogador ==")
+    if root then add("root: " .. fmtV(root.Position)) end
+    if hum then add("estado: " .. tostring(hum:GetState()) .. " | WalkSpeed " .. tostring(hum.WalkSpeed)) end
+    if root and char then
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { char }
+        params.IgnoreWater = false
+        local res = workspace:Raycast(root.Position, Vector3.new(0, -80, 0), params)
+        if res then
+            add("raio p/ baixo: " .. res.Instance:GetFullName() .. " | material " .. tostring(res.Material)
+                .. " | y " .. string.format("%.1f", res.Position.Y))
+        else
+            add("raio p/ baixo: nada")
+        end
+    end
+
+    add("== Partes com 'water' no nome ==")
+    local n = 0
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("BasePart") and v.Name:lower():find("water") then
+            n = n + 1
+            if n > 12 then break end
+            add(partInfo(v))
+        end
+    end
+
+    add("== Lava (" .. #lavaParts .. " no cache; ligue Walk on Lava antes) ==")
+    for i = 1, math.min(#lavaParts, 8) do
+        if lavaParts[i].Parent then add(partInfo(lavaParts[i])) end
+    end
+
+    add("== Personagem ==")
+    if char then
+        local k = 0
+        for _, c in ipairs(char:GetChildren()) do
+            k = k + 1
+            if k > 80 then break end
+            local val = c:IsA("ValueBase") and (" = " .. tostring(c.Value)) or ""
+            add(c.ClassName .. " " .. c.Name .. val)
+        end
+        for name, val in pairs(char:GetAttributes()) do
+            add("attr " .. tostring(name) .. " = " .. tostring(val))
+        end
+    end
+
+    if setclipboard then
+        setclipboard(table.concat(out, "\n"))
+        Library:Notify("Debug copiado (" .. #out .. " linhas). Cole aqui no chat.", 5)
+    else
+        Library:Notify("Seu executor não tem setclipboard.", 4)
+    end
+end
+
+local DbgMisc = Tabs.Misc:AddRightGroupbox("Debug (me mande o resultado)")
+DbgMisc:AddLabel("Para água/lava/stun: fique em cima da água ou lava (com o toggle ligado) e clique no botão. Para o stun, clique logo depois de levar um hit.", true)
+DbgMisc:AddButton("Copiar debug (água, lava, personagem)", copyDebug)
 
 --------------------------------------------------------------------
 -- AIMBOT
@@ -473,8 +657,13 @@ AimBox:AddSlider("AimMaxDist", {
 AimBox:AddSlider("AimPrediction", {
     Text = "Previsão de movimento", Default = 0, Min = 0, Max = 0.5, Rounding = 2,
 })
-AimBox:AddToggle("AimSticky", { Text = "Manter alvo travado", Default = true })
-AimBox:AddToggle("AimFaceSkill", { Text = "Virar para o alvo ao usar skill", Default = true })
+local AdvBox = Tabs.Aimbot:AddRightGroupbox("Aimbot avançado")
+AdvBox:AddLabel("Se alguma skill errar, desligue uma opção por vez para achar a causa.", true)
+AdvBox:AddToggle("AimHookMouse", { Text = "Redirecionar Mouse (Hit/Target)", Default = true })
+AdvBox:AddToggle("AimHookRays", { Text = "Redirecionar raios da câmera", Default = true })
+AdvBox:AddToggle("AimRemotes", { Text = "Redirecionar remotes da skill", Default = true })
+AdvBox:AddToggle("AimSticky", { Text = "Manter alvo travado", Default = false })
+AdvBox:AddToggle("AimFaceSkill", { Text = "Virar para o alvo ao usar skill", Default = false })
 AimBox:AddToggle("CameraLock", { Text = "Camera Lock (puxa a câmera)", Default = false })
 AimBox:AddSlider("CameraSmooth", {
     Text = "Suavização da câmera", Default = 0.5, Min = 0, Max = 0.95, Rounding = 2,
@@ -683,6 +872,14 @@ RunService:BindToRenderStep("BiosAimbot", Enum.RenderPriority.Camera.Value + 1, 
         AimState.camPos = cam2.CFrame.Position
         AimState.sp = Vector2.new(sp2.X, sp2.Y)
         AimState.inset = GuiService:GetGuiInset()
+        local dirv = AimState.pos - AimState.camPos
+        if dirv.Magnitude > 0.01 then
+            AimState.hitCF = CFrame.lookAt(AimState.pos, AimState.pos + dirv.Unit)
+        else
+            AimState.hitCF = CFrame.new(AimState.pos)
+        end
+        local rr = getRoot()
+        AimState.rootPos = rr and rr.Position or AimState.camPos
 
         if tick() < faceUntil and AimState.toolOk and not T("Fly") then
             local r = getRoot()
@@ -749,6 +946,39 @@ local function getNet()
     return m and m:FindFirstChild("Net")
 end
 
+-- um ataque pelos remotes do jogo contra todos os alvos no alcance
+local function remoteAttackOnce(tool, root, range, wantPlayers, wantNPCs)
+    local targets, parts, main = {}, {}, nil
+    for _, m in ipairs(getModels(wantPlayers, wantNPCs)) do
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        local part = m:FindFirstChild("HumanoidRootPart")
+        if hum and part and hum.Health > 0 and (part.Position - root.Position).Magnitude <= range then
+            table.insert(targets, { m, part })
+            table.insert(parts, part)
+            main = main or part
+        end
+    end
+    if not main then return "sem alvo no alcance" end
+
+    local net = getNet()
+    local RA = net and net:FindFirstChild("RE/RegisterAttack")
+    local RH = net and net:FindFirstChild("RE/RegisterHit")
+    local SG = net and net:FindFirstChild("RE/ShootGunEvent")
+    if tool.ToolTip == "Gun" then
+        if SG then
+            SG:FireServer(main.Position, parts)
+            return "atacando (arma) x" .. #targets
+        end
+        return "remote de arma não encontrado"
+    end
+    if RA and RH then
+        RA:FireServer(0)
+        RH:FireServer(main, targets)
+        return "atacando x" .. #targets
+    end
+    return "remotes de ataque não encontrados"
+end
+
 loop("FastAttack", function() return math.max(O("FastAttackDelay") or 0.1, 0.01) end, function()
     if not T("FastAttack") then
         if FastStatus.Text ~= "Status: desligado" then FastStatus:SetText("Status: desligado") end
@@ -770,42 +1000,7 @@ loop("FastAttack", function() return math.max(O("FastAttackDelay") or 0.1, 0.01)
         return
     end
 
-    local range = O("FastAttackRange") or 60
-    local targets, parts, main = {}, {}, nil
-    for _, m in ipairs(getModels(T("FastPlayers"), T("FastNPCs"))) do
-        local hum = m:FindFirstChildOfClass("Humanoid")
-        local part = m:FindFirstChild("HumanoidRootPart")
-        if hum and part and hum.Health > 0 and (part.Position - root.Position).Magnitude <= range then
-            table.insert(targets, { m, part })
-            table.insert(parts, part)
-            main = main or part
-        end
-    end
-    if not main then
-        FastStatus:SetText("Status: sem alvo no alcance")
-        return
-    end
-
-    local net = getNet()
-    local RA = net and net:FindFirstChild("RE/RegisterAttack")
-    local RH = net and net:FindFirstChild("RE/RegisterHit")
-    local SG = net and net:FindFirstChild("RE/ShootGunEvent")
-    if tool.ToolTip == "Gun" then
-        if SG then
-            SG:FireServer(main.Position, parts)
-            FastStatus:SetText("Status: atacando (arma) x" .. #targets)
-        else
-            FastStatus:SetText("Status: remote de arma não encontrado")
-        end
-    else
-        if RA and RH then
-            RA:FireServer(0)
-            RH:FireServer(main, targets)
-            FastStatus:SetText("Status: atacando x" .. #targets)
-        else
-            FastStatus:SetText("Status: remotes de ataque não encontrados")
-        end
-    end
+    FastStatus:SetText("Status: " .. remoteAttackOnce(tool, root, O("FastAttackRange") or 60, T("FastPlayers"), T("FastNPCs")))
 end)
 
 FastBox:AddToggle("RemoteSpy", { Text = "Remote Spy (debug)", Default = false })
@@ -833,7 +1028,14 @@ FastBox:AddButton("Copiar log do Remote Spy", function()
     for _, e in ipairs(spyLog) do
         local a = {}
         for i = 1, e.args.n do table.insert(a, ser(e.args[i])) end
-        table.insert(lines, e.name .. ":" .. e.method .. "(" .. table.concat(a, ", ") .. ")")
+        local line = e.name .. ":" .. e.method .. "(" .. table.concat(a, ", ") .. ")"
+        if e.aim ~= nil then line = line .. "  [aimbot " .. (e.aim and "ativo" or "inativo") .. "]" end
+        if e.mod then
+            local b = {}
+            for i = 1, e.mod.n do table.insert(b, ser(e.mod[i])) end
+            line = line .. "  ==> (" .. table.concat(b, ", ") .. ")"
+        end
+        table.insert(lines, line)
     end
     if #lines == 0 then
         Library:Notify("Log vazio. Ligue o spy e ataque normalmente (M1) antes.", 5)
@@ -920,16 +1122,28 @@ HitBox:AddLabel("Cor da hitbox"):AddColorPicker("HitboxColor", {
     Default = Color3.fromRGB(255, 0, 80), Title = "Cor da hitbox",
 })
 local HitStatus = HitBox:AddLabel("Alvos: 0")
+HitBox:AddDropdown("HitboxParts", {
+    Values = { "Só HumanoidRootPart", "HRP + Cabeça + Torso" }, Default = 1, Multi = false,
+    Text = "Partes aumentadas",
+})
+HitBox:AddSlider("HitboxRange", {
+    Text = "Aplicar até (studs)", Default = 300, Min = 30, Max = 1000, Rounding = 0,
+})
+HitBox:AddToggle("HitboxAssist", { Text = "Hit assist (M1 com alcance estendido)", Default = false })
+HitBox:AddLabel("Hit assist usa os mesmos remotes do Fast Attack: ao dar M1, registra o golpe nos alvos dentro do tamanho da hitbox.", true)
 
 local hitboxOriginal = {}
 local hitboxAdorn = {}
+local hitboxList = {}
 
 local function restoreHitbox(part)
-    local data = hitboxOriginal[part]
-    if data and part and part.Parent then
-        part.Size = data.Size
-        part.CanCollide = data.CanCollide
-        part.Massless = data.Massless
+    local d = hitboxOriginal[part]
+    if d and part and part.Parent then
+        part.Size = d.Size
+        part.CanCollide = d.CanCollide
+        part.Massless = d.Massless
+        part.CanTouch = d.CanTouch
+        part.CanQuery = d.CanQuery
     end
     hitboxOriginal[part] = nil
 end
@@ -939,27 +1153,53 @@ local function removeAdorn(part)
     hitboxAdorn[part] = nil
 end
 
-loop("Hitbox", 0.1, function()
-    local active, shown, count = {}, {}, 0
+-- lista de partes alvo (atualiza 5x por segundo)
+loop("HitboxScan", 0.2, function()
+    local list, count = {}, 0
+    local root = getRoot()
+    local maxD = O("HitboxRange") or 300
+    local names = { "HumanoidRootPart" }
+    if O("HitboxParts") == "HRP + Cabeça + Torso" then
+        names = { "HumanoidRootPart", "Head", "UpperTorso", "Torso" }
+    end
     for _, model in ipairs(getModels(T("HitboxPlayers"), T("HitboxNPCs"))) do
-        local part = model:FindFirstChild("HumanoidRootPart")
         local hum = model:FindFirstChildOfClass("Humanoid")
-        if part and hum and hum.Health > 0 then
-            if T("Hitbox") then
-                active[part] = true
-                count = count + 1
+        local hrp = model:FindFirstChild("HumanoidRootPart")
+        if hum and hrp and hum.Health > 0 and (not root or (hrp.Position - root.Position).Magnitude <= maxD) then
+            count = count + 1
+            for _, n in ipairs(names) do
+                local part = model:FindFirstChild(n)
+                if part and part:IsA("BasePart") then list[#list + 1] = part end
+            end
+        end
+    end
+    hitboxList = list
+    HitStatus:SetText("Alvos com hitbox: " .. count)
+end)
+
+-- aplica a cada frame (o jogo nao consegue voltar o tamanho)
+bind(RunService.Heartbeat, function()
+    local on, show = T("Hitbox"), T("HitboxVisual")
+    local s = O("HitboxSize") or 15
+    local inList = {}
+    for _, part in ipairs(hitboxList) do
+        if part.Parent then
+            inList[part] = true
+            if on then
                 if not hitboxOriginal[part] then
                     hitboxOriginal[part] = {
                         Size = part.Size, CanCollide = part.CanCollide, Massless = part.Massless,
+                        CanTouch = part.CanTouch, CanQuery = part.CanQuery,
                     }
                 end
-                local s = O("HitboxSize") or 15
-                part.Size = Vector3.new(s, s, s)
+                local size = (part.Name == "HumanoidRootPart") and s or math.max(s * 0.7, 2)
+                part.Size = Vector3.new(size, size, size)
                 part.CanCollide = false
                 part.Massless = true
+                part.CanTouch = true
+                part.CanQuery = true
             end
-            if T("HitboxVisual") then
-                shown[part] = true
+            if show and part.Name == "HumanoidRootPart" then
                 local a = hitboxAdorn[part]
                 if not a or a.Parent == nil then
                     a = Instance.new("BoxHandleAdornment")
@@ -976,13 +1216,24 @@ loop("Hitbox", 0.1, function()
         end
     end
     for part in pairs(hitboxOriginal) do
-        if not active[part] then restoreHitbox(part) end
+        if not (on and inList[part]) then restoreHitbox(part) end
     end
     for part in pairs(hitboxAdorn) do
-        if not shown[part] then removeAdorn(part) end
+        if not (show and inList[part]) then removeAdorn(part) end
     end
-    HitStatus:SetText("Alvos com hitbox: " .. count)
-end)
+end, "Hitbox")
+
+-- Hit assist: ao dar M1, registra o golpe nos alvos dentro da hitbox
+bind(UserInputService.InputBegan, function(input)
+    if not T("HitboxAssist") or UserInputService:GetFocusedTextBox() then return end
+    if input.UserInputType ~= Enum.UserInputType.MouseButton1 and input.UserInputType ~= Enum.UserInputType.Touch then
+        return
+    end
+    local c, root = getChar(), getRoot()
+    local tool = c and c:FindFirstChildOfClass("Tool")
+    if not tool or not root then return end
+    remoteAttackOnce(tool, root, (O("HitboxSize") or 15) + 10, T("HitboxPlayers"), T("HitboxNPCs"))
+end, "HitboxAssist")
 
 --------------------------------------------------------------------
 -- AURA
@@ -1475,6 +1726,7 @@ Library:OnUnload(function()
     cleanFly()
     hidePlat()
     restoreLava()
+    restoreWater()
     pcall(function() RunService:UnbindFromRenderStep("BiosAimbot") end)
     AimState.active = false
     if FOVCircle then pcall(function() FOVCircle:Remove() end) end
@@ -1501,15 +1753,36 @@ SaveManager:LoadAutoloadConfig()
 
 -- Hooks do aimbot (por ultimo, para nunca atrapalhar a criacao do menu)
 local okHooks, errHooks = pcall(function()
+local function retarget(v)
+    local ty = typeof(v)
+    local rp = AimState.rootPos
+    if ty == "Vector3" then
+        local m = v.Magnitude
+        if m <= 5 then
+            -- parece uma direcao: aponta para o alvo mantendo o tamanho
+            if m < 0.001 then return nil end
+            local d = AimState.pos - rp
+            if d.Magnitude < 0.01 then return nil end
+            return d.Unit * m
+        end
+        if (v - rp).Magnitude < 8 then return nil end -- parece a origem, nao o destino
+        return AimState.pos
+    elseif ty == "CFrame" then
+        if (v.Position - rp).Magnitude < 8 then return nil end
+        return AimState.hitCF
+    end
+    return nil
+end
+
 local hooksOk = false
 if hookmetamethod and newcclosure and checkcaller and getnamecallmethod then
     hooksOk = pcall(function()
         oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
-            if AimState.active and AimState.toolOk and self == Mouse and not checkcaller() then
+            if AimState.active and AimState.toolOk and self == Mouse and not checkcaller() and T("AimHookMouse") then
                 if key == "Hit" or key == "Target" or key == "UnitRay" or key == "X" or key == "Y" then
                     if not skillBlocked() then
                         if key == "Hit" then
-                            return CFrame.new(AimState.pos)
+                            return AimState.hitCF
                         elseif key == "Target" then
                             return AimState.part
                         elseif key == "UnitRay" then
@@ -1532,26 +1805,27 @@ if hookmetamethod and newcclosure and checkcaller and getnamecallmethod then
                     local name = self.Name
                     local par = self.Parent
                     local isTool = par ~= nil and par.ClassName == "Tool"
+                    local entry
                     if T("RemoteSpy") and (spyNames[name] or isTool) then
-                        spyLog[#spyLog + 1] = { name = name, method = method, args = table.pack(...) }
+                        entry = { name = name, method = method, args = table.pack(...), aim = AimState.active }
+                        spyLog[#spyLog + 1] = entry
                         if #spyLog > 40 then table.remove(spyLog, 1) end
                     end
-                    if AimState.active and AimState.toolOk and (isTool or aimRemoteNames[name]) and not skillBlocked() then
+                    if AimState.active and AimState.toolOk and T("AimRemotes")
+                        and (isTool or aimRemoteNames[name]) and not skillBlocked() then
                         local args = table.pack(...)
                         for i = 1, args.n do
-                            local ty = typeof(args[i])
-                            if ty == "Vector3" then
-                                args[i] = AimState.pos
-                                break
-                            elseif ty == "CFrame" then
-                                args[i] = CFrame.new(AimState.pos)
+                            local nv = retarget(args[i])
+                            if nv ~= nil then
+                                args[i] = nv
                                 break
                             end
                         end
+                        if entry then entry.mod = args end
                         if setnamecallmethod then setnamecallmethod(method) end
                         return oldNamecall(self, table.unpack(args, 1, args.n))
                     end
-                elseif AimState.active and AimState.toolOk and AimState.sp then
+                elseif AimState.active and AimState.toolOk and AimState.sp and T("AimHookRays") then
                     if (method == "ViewportPointToRay" or method == "ScreenPointToRay") and self == AimState.cam then
                         if not skillBlocked() then
                             return Ray.new(AimState.camPos, (AimState.pos - AimState.camPos).Unit)
