@@ -375,6 +375,13 @@ FovBox:AddSlider("AimFOVThickness", {
 FovBox:AddLabel("Cor do FOV"):AddColorPicker("AimFOVColor", {
     Default = Color3.fromRGB(255, 255, 255), Title = "Cor do FOV",
 })
+FovBox:AddToggle("AimLine", { Text = "Linha até o alvo", Default = true })
+FovBox:AddLabel("Cor da linha"):AddColorPicker("AimLineColor", {
+    Default = Color3.fromRGB(255, 0, 0), Title = "Cor da linha",
+})
+FovBox:AddSlider("AimLineThickness", {
+    Text = "Espessura da linha", Default = 1, Min = 1, Max = 5, Rounding = 0,
+})
 
 local BlackBox = Tabs.Aimbot:AddRightGroupbox("Skill Blacklist")
 BlackBox:AddLabel("Marque o que NÃO deve usar o aimbot", true)
@@ -399,6 +406,17 @@ if Drawing then
 end
 if not FOVCircle then
     Library:Notify("Seu executor não tem Drawing; o círculo do FOV não vai aparecer.", 6)
+end
+
+local AimLine
+if Drawing then
+    pcall(function()
+        AimLine = Drawing.new("Line")
+        AimLine.Visible = false
+        AimLine.Transparency = 1
+        AimLine.Thickness = 1
+        AimLine.Color = Color3.fromRGB(255, 0, 0)
+    end)
 end
 
 -- Blacklist
@@ -491,6 +509,7 @@ pcall(function() RunService:UnbindFromRenderStep("BiosAimbot") end)
 RunService:BindToRenderStep("BiosAimbot", Enum.RenderPriority.Camera.Value + 1, function()
     local ok, err = pcall(function()
         local on = T("Aimbot")
+        if AimLine then AimLine.Visible = false end
         if FOVCircle then
             FOVCircle.Visible = on and true or false
             if on then
@@ -519,6 +538,18 @@ RunService:BindToRenderStep("BiosAimbot", Enum.RenderPriority.Camera.Value + 1, 
         AimState.toolOk = toolAllowsAim()
         AimState.active = true
         setStatus(string.format("Alvo: %s (%d HP)", t.model.Name, math.floor(t.hum.Health)))
+
+        if AimLine and T("AimLine") then
+            local lineCam = Cam()
+            local sp, onScreen = lineCam:WorldToViewportPoint(t.part.Position)
+            if onScreen then
+                AimLine.From = UserInputService:GetMouseLocation()
+                AimLine.To = Vector2.new(sp.X, sp.Y)
+                AimLine.Color = O("AimLineColor") or Color3.fromRGB(255, 0, 0)
+                AimLine.Thickness = O("AimLineThickness") or 1
+                AimLine.Visible = true
+            end
+        end
 
         if T("CameraLock") and AimState.toolOk and not skillBlocked() then
             local cam = Cam()
@@ -1197,6 +1228,7 @@ Library:OnUnload(function()
     pcall(function() RunService:UnbindFromRenderStep("BiosAimbot") end)
     AimState.active = false
     if FOVCircle then pcall(function() FOVCircle:Remove() end) end
+    if AimLine then pcall(function() AimLine:Remove() end) end
     for part in pairs(hitboxOriginal) do restoreHitbox(part) end
     for part in pairs(hitboxAdorn) do removeAdorn(part) end
     for obj in pairs(espCache) do clearESPEntry(obj) end
