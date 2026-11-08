@@ -13,6 +13,7 @@ local TeleportService = game:GetService("TeleportService")
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
+local SoundService = game:GetService("SoundService")
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 
@@ -20,11 +21,37 @@ local function Cam() return workspace.CurrentCamera end
 local function T(n) local t = Toggles[n]; return t and t.Value end
 local function O(n) local o = Options[n]; return o and o.Value end
 
+-- erros aparecem na tela (para eu conseguir corrigir)
+local errSeen = {}
+local function report(name, err)
+    if not errSeen[name] then
+        errSeen[name] = true
+        warn("[BiosHub] " .. name .. ": " .. tostring(err))
+        pcall(function()
+            Library:Notify(name .. " erro: " .. tostring(err):sub(1, 140), 10)
+        end)
+    end
+end
+
 local conns = {}
-local function bind(signal, fn)
-    local c = signal:Connect(fn)
+local function bind(signal, fn, name)
+    name = name or "bind"
+    local c = signal:Connect(function(...)
+        local ok, err = pcall(fn, ...)
+        if not ok then report(name, err) end
+    end)
     table.insert(conns, c)
     return c
+end
+local function loop(name, delay, fn)
+    task.spawn(function()
+        while not Library.Unloaded do
+            local d = type(delay) == "function" and delay() or delay
+            task.wait(d)
+            local ok, err = pcall(fn)
+            if not ok then report(name, err) end
+        end
+    end)
 end
 
 local function getChar() return LocalPlayer.Character end
@@ -49,7 +76,6 @@ local function commF(...)
     return ok and res or nil
 end
 
--- lista de modelos alvo (players e/ou NPCs)
 local function getModels(wantPlayers, wantNPCs)
     local list = {}
     if wantPlayers then
@@ -105,22 +131,18 @@ MainBox:AddSlider("FleeHP", {
     Text = "Flee HP Threshold (%)", Default = 30, Min = 1, Max = 100, Rounding = 0,
 })
 
-task.spawn(function()
-    while task.wait(1) and not Library.Unloaded do
-        if T("AutoHaki") then
-            local c = getChar()
-            if c and not c:FindFirstChild("HasBuso") then
-                commF("Buso")
-            end
+loop("AutoHaki", 1, function()
+    if T("AutoHaki") then
+        local c = getChar()
+        if c and not c:FindFirstChild("HasBuso") then
+            commF("Buso")
         end
     end
 end)
 
-task.spawn(function()
-    while task.wait(2) and not Library.Unloaded do
-        if T("AutoV3") then pressKey(Enum.KeyCode.T) end
-        if T("AutoV4") then pressKey(Enum.KeyCode.Y) end
-    end
+loop("AutoV3V4", 2, function()
+    if T("AutoV3") then pressKey(Enum.KeyCode.T) end
+    if T("AutoV4") then pressKey(Enum.KeyCode.Y) end
 end)
 
 local fleeing = false
@@ -139,15 +161,13 @@ bind(RunService.Heartbeat, function()
     elseif pct > limit + 20 then
         fleeing = false
     end
-end)
+end, "AutoFlee")
 
--- Movimento
 local MoveBox = Tabs.Main:AddRightGroupbox("Movimento")
 
 MoveBox:AddDropdown("SpeedMode", {
     Values = { "CFrame", "WalkSpeed" }, Default = 1, Multi = false,
     Text = "Modo de velocidade",
-    Tooltip = "CFrame costuma funcionar melhor no Blox Fruits",
 })
 MoveBox:AddSlider("MoveSpeed", {
     Text = "Move Speed", Default = 50, Min = 16, Max = 300, Rounding = 0,
@@ -166,10 +186,8 @@ MoveBox:AddToggle("Fly", { Text = "Fly", Default = false }):AddKeyPicker("FlyKey
 MoveBox:AddSlider("FlySpeed", {
     Text = "Fly Speed", Default = 80, Min = 10, Max = 400, Rounding = 0,
 })
-
 MoveBox:AddToggle("InfSoru", { Text = "Infinite Soru", Default = false })
 
--- Velocidade e pulo
 bind(RunService.Heartbeat, function(dt)
     local hum, root = getHum(), getRoot()
     if not hum or not root then return end
@@ -189,21 +207,21 @@ bind(RunService.Heartbeat, function(dt)
         hum.UseJumpPower = true
         hum.JumpPower = O("JumpHeight") or 50
     end
-end)
+end, "Speed")
 
 bind(RunService.RenderStepped, function()
     if T("SpeedBoost") and not T("Fly") and O("SpeedMode") == "WalkSpeed" then
         local hum = getHum()
         if hum then hum.WalkSpeed = O("MoveSpeed") or 16 end
     end
-end)
+end, "SpeedRender")
 
 bind(UserInputService.JumpRequest, function()
     if T("InfJump") then
         local hum = getHum()
         if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
     end
-end)
+end, "InfJump")
 
 bind(RunService.Stepped, function()
     if T("Noclip") or T("Fly") then
@@ -214,7 +232,7 @@ bind(RunService.Stepped, function()
             end
         end
     end
-end)
+end, "Noclip")
 
 -- Fly
 local flyBV, flyBG
@@ -262,16 +280,16 @@ bind(RunService.Heartbeat, function()
     if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir = dir + Vector3.new(0, 1, 0) end
     if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir = dir - Vector3.new(0, 1, 0) end
     if dir.Magnitude == 0 and hum.MoveDirection.Magnitude > 0 then
-        dir = hum.MoveDirection -- celular
+        dir = hum.MoveDirection
     end
 
     local vel = dir.Magnitude > 0 and dir.Unit * (O("FlySpeed") or 80) or Vector3.zero
     flyBV.Velocity = vel
     root.AssemblyLinearVelocity = vel
     flyBG.CFrame = cf
-end)
+end, "Fly")
 
--- Infinite Soru (precisa de getgc / debug.getupvalues no executor)
+-- Infinite Soru
 local soruTables = {}
 local function findSoru()
     soruTables = {}
@@ -302,21 +320,19 @@ Toggles.InfSoru:OnChanged(function()
     end
 end)
 
-task.spawn(function()
-    local lastSearch = 0
-    while task.wait(0.1) and not Library.Unloaded do
-        if T("InfSoru") then
-            if #soruTables == 0 and tick() - lastSearch > 3 then
-                lastSearch = tick()
-                pcall(findSoru)
-            end
-            for _, tbl in ipairs(soruTables) do
-                pcall(function() tbl.LastUse = 0 end)
-            end
+local lastSoruSearch = 0
+loop("InfSoru", 0.1, function()
+    if T("InfSoru") then
+        if #soruTables == 0 and tick() - lastSoruSearch > 3 then
+            lastSoruSearch = tick()
+            pcall(findSoru)
+        end
+        for _, tbl in ipairs(soruTables) do
+            pcall(function() tbl.LastUse = 0 end)
         end
     end
 end)
-bind(LocalPlayer.CharacterAdded, function() soruTables = {} end)
+bind(LocalPlayer.CharacterAdded, function() soruTables = {} end, "SoruChar")
 
 --------------------------------------------------------------------
 -- AIMBOT
@@ -326,6 +342,7 @@ local AimBox = Tabs.Aimbot:AddLeftGroupbox("Aimbot")
 AimBox:AddToggle("Aimbot", { Text = "Aimbot", Default = false }):AddKeyPicker("AimbotKey", {
     Default = "G", SyncToggleState = true, Mode = "Toggle", Text = "Aimbot", NoUI = false,
 })
+local AimStatus = AimBox:AddLabel("Alvo: aimbot desligado")
 AimBox:AddToggle("TargetPlayers", { Text = "Target Player", Default = true })
 AimBox:AddToggle("TargetNPCs", { Text = "Target NPC", Default = true })
 AimBox:AddDropdown("AimPriority", {
@@ -363,7 +380,7 @@ local BlackBox = Tabs.Aimbot:AddRightGroupbox("Skill Blacklist")
 BlackBox:AddLabel("Marque o que NÃO deve usar o aimbot", true)
 BlackBox:AddDropdown("SkillBlacklist", {
     Values = { "M1", "Z", "X", "C", "V", "F" },
-    Default = 1, Multi = true, Text = "Ataques ignorados",
+    Multi = true, Text = "Ataques ignorados",
 })
 
 local AimState = { active = false, pos = nil, part = nil, toolOk = true }
@@ -378,8 +395,11 @@ if Drawing then
         FOVCircle.Transparency = 1
     end)
 end
+if not FOVCircle then
+    Library:Notify("Seu executor não tem Drawing; o círculo do FOV não vai aparecer.", 6)
+end
 
--- Blacklist de skills
+-- Blacklist
 local blacklistKeys, blacklistM1 = {}, false
 local blockedUntil = 0
 local function rebuildBlacklist()
@@ -402,6 +422,7 @@ Options.SkillBlacklist:OnChanged(rebuildBlacklist)
 rebuildBlacklist()
 
 local function skillBlocked()
+    if #blacklistKeys == 0 and not blacklistM1 then return false end
     if tick() < blockedUntil then return true end
     for _, kc in ipairs(blacklistKeys) do
         if UserInputService:IsKeyDown(kc) then return true end
@@ -420,9 +441,8 @@ bind(UserInputService.InputBegan, function(input)
     elseif input.UserInputType == Enum.UserInputType.MouseButton1 and blacklistM1 then
         blockedUntil = tick() + 0.4
     end
-end)
+end, "Blacklist")
 
--- Escolha do alvo
 local function findTarget()
     local cam = Cam()
     if not cam then return nil end
@@ -454,7 +474,7 @@ local function findTarget()
                         end
                         if not bestScore or score < bestScore then
                             bestScore = score
-                            best = { model = model, part = part }
+                            best = { model = model, part = part, hum = hum }
                         end
                     end
                 end
@@ -473,46 +493,68 @@ local function toolAllowsAim()
     return T("SkillAimbot") == true
 end
 
+local lastStatus = ""
+local function setStatus(text)
+    if text ~= lastStatus then
+        lastStatus = text
+        AimStatus:SetText(text)
+    end
+end
+
 pcall(function() RunService:UnbindFromRenderStep("BiosAimbot") end)
 RunService:BindToRenderStep("BiosAimbot", Enum.RenderPriority.Camera.Value + 1, function()
-    local on = T("Aimbot")
-    if FOVCircle then
-        FOVCircle.Visible = on and true or false
-        if on then
-            FOVCircle.Position = UserInputService:GetMouseLocation()
-            FOVCircle.Radius = O("AimFOV") or 150
-            FOVCircle.Thickness = O("AimFOVThickness") or 1
-            FOVCircle.Color = O("AimFOVColor") or Color3.new(1, 1, 1)
+    local ok, err = pcall(function()
+        local on = T("Aimbot")
+        if FOVCircle then
+            FOVCircle.Visible = on and true or false
+            if on then
+                FOVCircle.Position = UserInputService:GetMouseLocation()
+                FOVCircle.Radius = O("AimFOV") or 150
+                FOVCircle.Thickness = O("AimFOVThickness") or 1
+                FOVCircle.Color = O("AimFOVColor") or Color3.new(1, 1, 1)
+            end
         end
-    end
-    if not on then
-        AimState.active = false
-        return
-    end
+        if not on then
+            AimState.active = false
+            setStatus("Alvo: aimbot desligado")
+            return
+        end
 
-    local t = findTarget()
-    if not t then
-        AimState.active = false
-        return
-    end
-    local pred = O("AimPrediction") or 0
-    local vel = t.part.AssemblyLinearVelocity
-    AimState.pos = t.part.Position + vel * pred
-    AimState.part = t.part
-    AimState.toolOk = toolAllowsAim()
-    AimState.active = true
+        local t = findTarget()
+        if not t then
+            AimState.active = false
+            setStatus("Alvo: nenhum no FOV")
+            return
+        end
+        local pred = O("AimPrediction") or 0
+        local vel = t.part.AssemblyLinearVelocity
+        AimState.pos = t.part.Position + vel * pred
+        AimState.part = t.part
+        AimState.toolOk = toolAllowsAim()
+        AimState.active = true
+        setStatus(string.format("Alvo: %s (%d HP)", t.model.Name, math.floor(t.hum.Health)))
 
-    if T("CameraLock") and AimState.toolOk and not skillBlocked() then
-        local cam = Cam()
-        local alpha = math.clamp(1 - (O("CameraSmooth") or 0.5), 0.02, 1)
-        cam.CFrame = cam.CFrame:Lerp(CFrame.new(cam.CFrame.Position, AimState.pos), alpha)
-    end
+        if T("CameraLock") and AimState.toolOk and not skillBlocked() then
+            local cam = Cam()
+            local alpha = math.clamp(1 - (O("CameraSmooth") or 0.5), 0.02, 1)
+            cam.CFrame = cam.CFrame:Lerp(CFrame.new(cam.CFrame.Position, AimState.pos), alpha)
+        end
+    end)
+    if not ok then report("Aimbot", err) end
 end)
 
--- Silent aim: troca Mouse.Hit / Mouse.Target quando o jogo lê
-local oldIndex
-if hookmetamethod and newcclosure and checkcaller then
-    local ok = pcall(function()
+-- Hooks: Mouse.Hit/Target e argumentos Vector3 dos remotes de skill/arma
+local spyLog = {}
+local spyNames = {
+    ["RE/RegisterAttack"] = true, ["RE/RegisterHit"] = true,
+    ["RE/ShootGunEvent"] = true, ["RemoteEvent"] = true,
+}
+local aimRemoteNames = { ["RemoteEvent"] = true, ["RE/ShootGunEvent"] = true }
+
+local oldIndex, oldNamecall
+local hooksOk = false
+if hookmetamethod and newcclosure and checkcaller and getnamecallmethod then
+    hooksOk = pcall(function()
         oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
             if AimState.active and AimState.toolOk and self == Mouse and not checkcaller() then
                 if key == "Hit" or key == "Target" then
@@ -527,12 +569,34 @@ if hookmetamethod and newcclosure and checkcaller then
             end
             return oldIndex(self, key)
         end))
+
+        oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            if (method == "FireServer" or method == "InvokeServer") and not checkcaller() then
+                local name = self.Name
+                if T("RemoteSpy") and spyNames[name] then
+                    spyLog[#spyLog + 1] = { name = name, method = method, args = table.pack(...) }
+                    if #spyLog > 40 then table.remove(spyLog, 1) end
+                end
+                if AimState.active and AimState.toolOk and aimRemoteNames[name] and not skillBlocked() then
+                    local args = table.pack(...)
+                    for i = 1, args.n do
+                        if typeof(args[i]) == "Vector3" then
+                            args[i] = AimState.pos
+                            break
+                        end
+                    end
+                    if setnamecallmethod then setnamecallmethod(method) end
+                    return oldNamecall(self, table.unpack(args, 1, args.n))
+                end
+                if setnamecallmethod then setnamecallmethod(method) end
+            end
+            return oldNamecall(self, ...)
+        end))
     end)
-    if not ok then
-        Library:Notify("Silent aim indisponível; use o Camera Lock.", 6)
-    end
-else
-    Library:Notify("Seu executor não tem hookmetamethod; use o Camera Lock.", 6)
+end
+if not hooksOk then
+    Library:Notify("Seu executor não suporta hooks; o aimbot só funciona pelo Camera Lock.", 8)
 end
 
 --------------------------------------------------------------------
@@ -540,24 +604,118 @@ end
 --------------------------------------------------------------------
 local FastBox = Tabs.Combat:AddLeftGroupbox("Fast Attack")
 FastBox:AddToggle("FastAttack", { Text = "Fast Attack", Default = false })
+FastBox:AddDropdown("FastMethod", {
+    Values = { "Remotes (M1 invisível)", "Cliques" }, Default = 1, Multi = false,
+    Text = "Método",
+})
 FastBox:AddSlider("FastAttackDelay", {
     Text = "Delay (segundos)", Default = 0.1, Min = 0.01, Max = 1, Rounding = 2,
 })
-FastBox:AddLabel("Funciona por cliques automáticos, então o jogo ainda limita o combo.", true)
+FastBox:AddSlider("FastAttackRange", {
+    Text = "Alcance", Default = 60, Min = 10, Max = 200, Rounding = 0,
+})
+FastBox:AddToggle("FastNPCs", { Text = "Atacar NPCs", Default = true })
+FastBox:AddToggle("FastPlayers", { Text = "Atacar players", Default = false })
+local FastStatus = FastBox:AddLabel("Status: desligado")
 
-task.spawn(function()
-    while not Library.Unloaded do
-        task.wait(math.max(O("FastAttackDelay") or 0.1, 0.01))
-        if T("FastAttack") then
-            local c = getChar()
-            local tool = c and c:FindFirstChildOfClass("Tool")
-            if tool then pcall(function() tool:Activate() end) end
-            pcall(function()
-                local cam = Cam()
-                VirtualUser:Button1Down(Vector2.new(0, 0), cam and cam.CFrame)
-                VirtualUser:Button1Up(Vector2.new(0, 0), cam and cam.CFrame)
-            end)
+local function getNet()
+    local m = ReplicatedStorage:FindFirstChild("Modules")
+    return m and m:FindFirstChild("Net")
+end
+
+loop("FastAttack", function() return math.max(O("FastAttackDelay") or 0.1, 0.01) end, function()
+    if not T("FastAttack") then
+        if FastStatus.Text ~= "Status: desligado" then FastStatus:SetText("Status: desligado") end
+        return
+    end
+    local c, root = getChar(), getRoot()
+    local tool = c and c:FindFirstChildOfClass("Tool")
+    if not tool or not root then
+        FastStatus:SetText("Status: equipe uma arma/estilo")
+        return
+    end
+
+    if O("FastMethod") == "Cliques" then
+        pcall(function() tool:Activate() end)
+        local cam = Cam()
+        VirtualUser:Button1Down(Vector2.new(0, 0), cam and cam.CFrame)
+        VirtualUser:Button1Up(Vector2.new(0, 0), cam and cam.CFrame)
+        FastStatus:SetText("Status: clicando")
+        return
+    end
+
+    local range = O("FastAttackRange") or 60
+    local targets, parts, main = {}, {}, nil
+    for _, m in ipairs(getModels(T("FastPlayers"), T("FastNPCs"))) do
+        local hum = m:FindFirstChildOfClass("Humanoid")
+        local part = m:FindFirstChild("HumanoidRootPart")
+        if hum and part and hum.Health > 0 and (part.Position - root.Position).Magnitude <= range then
+            table.insert(targets, { m, part })
+            table.insert(parts, part)
+            main = main or part
         end
+    end
+    if not main then
+        FastStatus:SetText("Status: sem alvo no alcance")
+        return
+    end
+
+    local net = getNet()
+    local RA = net and net:FindFirstChild("RE/RegisterAttack")
+    local RH = net and net:FindFirstChild("RE/RegisterHit")
+    local SG = net and net:FindFirstChild("RE/ShootGunEvent")
+    if tool.ToolTip == "Gun" then
+        if SG then
+            SG:FireServer(main.Position, parts)
+            FastStatus:SetText("Status: atacando (arma) x" .. #targets)
+        else
+            FastStatus:SetText("Status: remote de arma não encontrado")
+        end
+    else
+        if RA and RH then
+            RA:FireServer(0)
+            RH:FireServer(main, targets)
+            FastStatus:SetText("Status: atacando x" .. #targets)
+        else
+            FastStatus:SetText("Status: remotes de ataque não encontrados")
+        end
+    end
+end)
+
+FastBox:AddToggle("RemoteSpy", { Text = "Remote Spy (debug)", Default = false })
+FastBox:AddButton("Copiar log do Remote Spy", function()
+    local function ser(v, depth)
+        depth = depth or 0
+        local t = typeof(v)
+        if t == "string" then return '"' .. v .. '"'
+        elseif t == "Instance" then
+            local ok, n = pcall(function() return v:GetFullName() end)
+            return "Instance(" .. tostring(ok and n or v.Name) .. ")"
+        elseif t == "table" then
+            if depth >= 3 then return "{...}" end
+            local out, n = {}, 0
+            for k, x in pairs(v) do
+                n = n + 1
+                if n > 12 then break end
+                table.insert(out, "[" .. tostring(k) .. "]=" .. ser(x, depth + 1))
+            end
+            return "{" .. table.concat(out, ", ") .. "}"
+        end
+        return t .. "(" .. tostring(v) .. ")"
+    end
+    local lines = {}
+    for _, e in ipairs(spyLog) do
+        local a = {}
+        for i = 1, e.args.n do table.insert(a, ser(e.args[i])) end
+        table.insert(lines, e.name .. ":" .. e.method .. "(" .. table.concat(a, ", ") .. ")")
+    end
+    if #lines == 0 then
+        Library:Notify("Log vazio. Ligue o spy e ataque normalmente (M1) antes.", 5)
+    elseif setclipboard then
+        setclipboard(table.concat(lines, "\n"))
+        Library:Notify("Log copiado (" .. #lines .. " linhas).", 4)
+    else
+        Library:Notify("Seu executor não tem setclipboard.", 4)
     end
 end)
 
@@ -572,6 +730,7 @@ HitBox:AddToggle("HitboxVisual", { Text = "Hitbox Visual", Default = false })
 HitBox:AddLabel("Cor da hitbox"):AddColorPicker("HitboxColor", {
     Default = Color3.fromRGB(255, 0, 80), Title = "Cor da hitbox",
 })
+local HitStatus = HitBox:AddLabel("Alvos: 0")
 
 local hitboxOriginal = {}
 local hitboxAdorn = {}
@@ -581,6 +740,7 @@ local function restoreHitbox(part)
     if data and part and part.Parent then
         part.Size = data.Size
         part.CanCollide = data.CanCollide
+        part.Massless = data.Massless
     end
     hitboxOriginal[part] = nil
 end
@@ -590,51 +750,53 @@ local function removeAdorn(part)
     hitboxAdorn[part] = nil
 end
 
-task.spawn(function()
-    while task.wait(0.1) and not Library.Unloaded do
-        local active, shown = {}, {}
-        local models = getModels(T("HitboxPlayers"), T("HitboxNPCs"))
-        for _, model in ipairs(models) do
-            local part = model:FindFirstChild("HumanoidRootPart")
-            local hum = model:FindFirstChildOfClass("Humanoid")
-            if part and hum and hum.Health > 0 then
-                if T("Hitbox") then
-                    active[part] = true
-                    if not hitboxOriginal[part] then
-                        hitboxOriginal[part] = { Size = part.Size, CanCollide = part.CanCollide }
-                    end
-                    local s = O("HitboxSize") or 15
-                    part.Size = Vector3.new(s, s, s)
-                    part.CanCollide = false
+loop("Hitbox", 0.1, function()
+    local active, shown, count = {}, {}, 0
+    for _, model in ipairs(getModels(T("HitboxPlayers"), T("HitboxNPCs"))) do
+        local part = model:FindFirstChild("HumanoidRootPart")
+        local hum = model:FindFirstChildOfClass("Humanoid")
+        if part and hum and hum.Health > 0 then
+            if T("Hitbox") then
+                active[part] = true
+                count = count + 1
+                if not hitboxOriginal[part] then
+                    hitboxOriginal[part] = {
+                        Size = part.Size, CanCollide = part.CanCollide, Massless = part.Massless,
+                    }
                 end
-                if T("HitboxVisual") then
-                    shown[part] = true
-                    local a = hitboxAdorn[part]
-                    if not a or a.Parent == nil then
-                        a = Instance.new("BoxHandleAdornment")
-                        a.AlwaysOnTop = true
-                        a.ZIndex = 5
-                        a.Transparency = 0.7
-                        a.Adornee = part
-                        a.Parent = Cam() or workspace
-                        hitboxAdorn[part] = a
-                    end
-                    a.Size = part.Size
-                    a.Color3 = O("HitboxColor") or Color3.fromRGB(255, 0, 80)
+                local s = O("HitboxSize") or 15
+                part.Size = Vector3.new(s, s, s)
+                part.CanCollide = false
+                part.Massless = true
+            end
+            if T("HitboxVisual") then
+                shown[part] = true
+                local a = hitboxAdorn[part]
+                if not a or a.Parent == nil then
+                    a = Instance.new("BoxHandleAdornment")
+                    a.AlwaysOnTop = true
+                    a.ZIndex = 5
+                    a.Transparency = 0.7
+                    a.Adornee = part
+                    a.Parent = Cam() or workspace
+                    hitboxAdorn[part] = a
                 end
+                a.Size = part.Size
+                a.Color3 = O("HitboxColor") or Color3.fromRGB(255, 0, 80)
             end
         end
-        for part in pairs(hitboxOriginal) do
-            if not active[part] then restoreHitbox(part) end
-        end
-        for part in pairs(hitboxAdorn) do
-            if not shown[part] then removeAdorn(part) end
-        end
     end
+    for part in pairs(hitboxOriginal) do
+        if not active[part] then restoreHitbox(part) end
+    end
+    for part in pairs(hitboxAdorn) do
+        if not shown[part] then removeAdorn(part) end
+    end
+    HitStatus:SetText("Alvos com hitbox: " .. count)
 end)
 
 --------------------------------------------------------------------
--- AURA (efeito visual no personagem)
+-- AURA
 --------------------------------------------------------------------
 local AuraBox = Tabs.Aura:AddLeftGroupbox("Aura")
 AuraBox:AddToggle("AuraVisual", { Text = "Aura visual", Default = false })
@@ -663,7 +825,7 @@ bind(RunService.Heartbeat, function()
         auraHL:Destroy()
         auraHL = nil
     end
-end)
+end, "Aura")
 
 --------------------------------------------------------------------
 -- ESP
@@ -672,12 +834,64 @@ local EspBox = Tabs.ESP:AddLeftGroupbox("ESP")
 EspBox:AddToggle("PlayerESP", { Text = "Player ESP", Default = false })
 EspBox:AddToggle("FruitESP", { Text = "Fruit ESP", Default = false })
 EspBox:AddToggle("NameESP", { Text = "Nomes + distância", Default = true })
+EspBox:AddToggle("BountyESP", { Text = "Mostrar bounty", Default = true })
+EspBox:AddToggle("PvpESP", { Text = "Mostrar status de PvP", Default = true })
 EspBox:AddLabel("Cor Players"):AddColorPicker("PlayerESPColor", {
     Default = Color3.fromRGB(255, 60, 60), Title = "Cor Players",
 })
 EspBox:AddLabel("Cor Frutas"):AddColorPicker("FruitESPColor", {
     Default = Color3.fromRGB(255, 170, 0), Title = "Cor Frutas",
 })
+
+local function fmtNum(n)
+    n = tonumber(n) or 0
+    if n >= 1e9 then return string.format("%.1fB", n / 1e9)
+    elseif n >= 1e6 then return string.format("%.1fM", n / 1e6)
+    elseif n >= 1e3 then return string.format("%.1fK", n / 1e3) end
+    return tostring(math.floor(n))
+end
+
+local function getBounty(p)
+    local ls = p:FindFirstChild("leaderstats")
+    if ls then
+        for _, v in ipairs(ls:GetChildren()) do
+            local n = v.Name:lower()
+            if v:IsA("ValueBase") and (n:find("bounty") or n:find("honor")) then
+                return v.Value
+            end
+        end
+    end
+    return nil
+end
+
+local function scanPvp(inst)
+    if not inst then return nil end
+    for name, val in pairs(inst:GetAttributes()) do
+        if tostring(name):lower():find("pvp") then return val, tostring(name) end
+    end
+    for _, c in ipairs(inst:GetChildren()) do
+        if c:IsA("ValueBase") and c.Name:lower():find("pvp") then return c.Value, c.Name end
+    end
+    return nil
+end
+
+local function getPvp(p)
+    local val, name = scanPvp(p)
+    if val == nil then val, name = scanPvp(p.Character) end
+    if val ~= nil then
+        if type(val) == "boolean" then
+            local disabled = name and name:lower():find("disabled")
+            local on = val
+            if disabled then on = not val end
+            return on and "ON" or "OFF"
+        end
+        return tostring(val)
+    end
+    if p.Character and p.Character:FindFirstChildOfClass("ForceField") then
+        return "OFF (safe zone)"
+    end
+    return "?"
+end
 
 local espCache = {}
 local function clearESPEntry(obj)
@@ -688,7 +902,7 @@ local function clearESPEntry(obj)
         espCache[obj] = nil
     end
 end
-local function makeESP(obj, adornee, label, colorOption)
+local function makeESP(obj, adornee, label, colorOption, extra)
     local e = espCache[obj]
     if not e then
         e = {}
@@ -696,9 +910,9 @@ local function makeESP(obj, adornee, label, colorOption)
         e.hl.Adornee = adornee
         e.hl.Parent = adornee
         e.bb = Instance.new("BillboardGui")
-        e.bb.Size = UDim2.new(0, 200, 0, 30)
+        e.bb.Size = UDim2.new(0, 220, 0, 48)
         e.bb.AlwaysOnTop = true
-        e.bb.StudsOffset = Vector3.new(0, 3, 0)
+        e.bb.StudsOffset = Vector3.new(0, 3.5, 0)
         e.bb.Adornee = adornee
         e.bb.Parent = adornee
         e.txt = Instance.new("TextLabel")
@@ -719,31 +933,75 @@ local function makeESP(obj, adornee, label, colorOption)
     local part = adornee:IsA("Model") and (adornee:FindFirstChild("HumanoidRootPart") or adornee.PrimaryPart)
         or adornee:FindFirstChildWhichIsA("BasePart", true)
     local dist = (root and part) and math.floor((root.Position - part.Position).Magnitude) or 0
-    e.txt.Text = string.format("%s [%dm]", label, dist)
+    local text = string.format("%s [%dm]", label, dist)
+    if extra and extra ~= "" then text = text .. "\n" .. extra end
+    e.txt.Text = text
 end
 
-task.spawn(function()
-    while task.wait(0.5) and not Library.Unloaded do
-        local seen = {}
-        if T("PlayerESP") then
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p ~= LocalPlayer and p.Character then
-                    seen[p] = true
-                    makeESP(p, p.Character, p.Name, "PlayerESPColor")
+loop("ESP", 0.5, function()
+    local seen = {}
+    if T("PlayerESP") then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                seen[p] = true
+                local parts = {}
+                if T("BountyESP") then
+                    local b = getBounty(p)
+                    table.insert(parts, "Bounty: " .. (b and fmtNum(b) or "?"))
                 end
+                if T("PvpESP") then
+                    table.insert(parts, "PvP: " .. getPvp(p))
+                end
+                makeESP(p, p.Character, p.Name, "PlayerESPColor", table.concat(parts, " | "))
             end
         end
-        if T("FruitESP") then
-            for _, obj in ipairs(workspace:GetChildren()) do
-                if obj:IsA("Tool") and obj.Name:find("Fruit") then
-                    seen[obj] = true
-                    makeESP(obj, obj, obj.Name, "FruitESPColor")
-                end
+    end
+    if T("FruitESP") then
+        for _, obj in ipairs(workspace:GetChildren()) do
+            if obj:IsA("Tool") and obj.Name:find("Fruit") then
+                seen[obj] = true
+                makeESP(obj, obj, obj.Name, "FruitESPColor")
             end
         end
-        for obj in pairs(espCache) do
-            if not seen[obj] then clearESPEntry(obj) end
+    end
+    for obj in pairs(espCache) do
+        if not seen[obj] then clearESPEntry(obj) end
+    end
+end)
+
+local DbgBox = Tabs.ESP:AddRightGroupbox("Debug do ESP")
+DbgBox:AddLabel("Se o status de PvP aparecer como '?', escolha um jogador e copie o dump para me mandar.", true)
+DbgBox:AddDropdown("DumpPlayer", { SpecialType = "Player", Text = "Jogador" })
+DbgBox:AddButton("Copiar dump do jogador", function()
+    local p = Players:FindFirstChild(O("DumpPlayer") or "")
+    if not p then
+        Library:Notify("Escolha um jogador.", 3)
+        return
+    end
+    local out = {}
+    local function dump(label, inst)
+        if not inst then return end
+        table.insert(out, "== " .. label .. " ==")
+        for k, v in pairs(inst:GetAttributes()) do
+            table.insert(out, "attr " .. tostring(k) .. " = " .. tostring(v))
         end
+        local n = 0
+        for _, c in ipairs(inst:GetChildren()) do
+            n = n + 1
+            if n > 60 then break end
+            local val = ""
+            if c:IsA("ValueBase") then val = " = " .. tostring(c.Value) end
+            table.insert(out, c.ClassName .. " " .. c.Name .. val)
+        end
+    end
+    dump("Player", p)
+    dump("leaderstats", p:FindFirstChild("leaderstats"))
+    dump("Character", p.Character)
+    if setclipboard then
+        setclipboard(table.concat(out, "\n"))
+        Library:Notify("Dump copiado.", 4)
+    else
+        Library:Notify("Seu executor não tem setclipboard.", 4)
     end
 end)
 
@@ -760,7 +1018,7 @@ bind(RunService.RenderStepped, function()
         local cam = Cam()
         if cam then cam.FieldOfView = O("FOVValue") or 70 end
     end
-end)
+end, "CamFOV")
 
 --------------------------------------------------------------------
 -- TELEPORT
@@ -806,7 +1064,7 @@ bind(LocalPlayer.Idled, function()
         VirtualUser:CaptureController()
         VirtualUser:ClickButton2(Vector2.new())
     end
-end)
+end, "AntiAFK")
 
 MiscBox:AddToggle("FullBright", { Text = "Full Bright", Default = false })
 bind(RunService.RenderStepped, function()
@@ -816,9 +1074,9 @@ bind(RunService.RenderStepped, function()
         Lighting.FogEnd = 1e6
         Lighting.GlobalShadows = false
     end
-end)
+end, "FullBright")
 
-MiscBox:AddButton("Boost de FPS", function()
+MiscBox:AddButton("Boost de FPS (manual)", function()
     for _, v in ipairs(workspace:GetDescendants()) do
         if v:IsA("BasePart") then
             v.Material = Enum.Material.Plastic
@@ -829,6 +1087,82 @@ MiscBox:AddButton("Boost de FPS", function()
     end
     Library:Notify("Boost de FPS aplicado.", 3)
 end)
+
+-- Automáticos
+local AutoBox = Tabs.Misc:AddLeftGroupbox("Automático")
+AutoBox:AddToggle("AutoFastMode", { Text = "Auto Fast Mode (menos efeitos)", Default = true })
+AutoBox:AddToggle("NoMusic", { Text = "Auto No Background Music", Default = true })
+AutoBox:AddToggle("NoCameraShake", { Text = "Auto No Camera Shake", Default = true })
+
+-- Fast Mode: desliga partículas/efeitos pesados
+local function fastDisable(obj)
+    if obj:IsA("ParticleEmitter") or obj:IsA("Trail") or obj:IsA("Beam")
+        or obj:IsA("Fire") or obj:IsA("Smoke") or obj:IsA("Sparkles") then
+        obj.Enabled = false
+    end
+end
+local function applyFastMode()
+    pcall(function() settings().Rendering.QualityLevel = Enum.QualityLevel.Level01 end)
+    Lighting.GlobalShadows = false
+    for _, v in ipairs(Lighting:GetChildren()) do
+        if v:IsA("BloomEffect") or v:IsA("BlurEffect") or v:IsA("SunRaysEffect")
+            or v:IsA("DepthOfFieldEffect") then
+            v.Enabled = false
+        end
+    end
+    local n = 0
+    for _, v in ipairs(workspace:GetDescendants()) do
+        fastDisable(v)
+        n = n + 1
+        if n % 2000 == 0 then task.wait() end
+    end
+end
+bind(workspace.DescendantAdded, function(obj)
+    if T("AutoFastMode") then fastDisable(obj) end
+end, "FastModeAdd")
+Toggles.AutoFastMode:OnChanged(function()
+    if Toggles.AutoFastMode.Value then task.spawn(applyFastMode) end
+end)
+if T("AutoFastMode") then task.spawn(applyFastMode) end
+
+-- Sem música
+local mutedSounds = {}
+local function isMusic(s)
+    return s:IsA("Sound")
+        and (s.Looped or s.Name:lower():find("music"))
+        and not s:FindFirstAncestorWhichIsA("BasePart")
+end
+local function sweepSounds(list)
+    for _, s in ipairs(list) do
+        if isMusic(s) then
+            if mutedSounds[s] == nil then mutedSounds[s] = s.Volume end
+            s.Volume = 0
+        end
+    end
+end
+loop("NoMusic", 1, function()
+    if T("NoMusic") then
+        sweepSounds(SoundService:GetDescendants())
+        sweepSounds(workspace:GetChildren())
+        local pg = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if pg then sweepSounds(pg:GetDescendants()) end
+    elseif next(mutedSounds) ~= nil then
+        for s, vol in pairs(mutedSounds) do
+            if s and s.Parent then s.Volume = vol end
+        end
+        mutedSounds = {}
+    end
+end)
+
+-- Sem tremor de câmera
+bind(RunService.RenderStepped, function()
+    if T("NoCameraShake") then
+        local hum = getHum()
+        if hum and hum.CameraOffset ~= Vector3.zero then
+            hum.CameraOffset = Vector3.zero
+        end
+    end
+end, "NoCameraShake")
 
 local RemBox = Tabs.Misc:AddRightGroupbox("Stats e Raça (gasta fragmentos)")
 RemBox:AddButton({
@@ -853,7 +1187,7 @@ RemBox:AddButton({
 })
 
 --------------------------------------------------------------------
--- SHOP (remotes do jogo; podem mudar com atualizações)
+-- SHOP
 --------------------------------------------------------------------
 local ShopBox = Tabs.Shop:AddLeftGroupbox("Habilidades")
 local function buyBtn(text, ...)
@@ -928,6 +1262,9 @@ Library:OnUnload(function()
     for part in pairs(hitboxAdorn) do removeAdorn(part) end
     for obj in pairs(espCache) do clearESPEntry(obj) end
     if auraHL then auraHL:Destroy() end
+    for s, vol in pairs(mutedSounds) do
+        if s and s.Parent then s.Volume = vol end
+    end
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
 end)
 
