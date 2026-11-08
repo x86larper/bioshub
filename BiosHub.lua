@@ -378,10 +378,12 @@ FovBox:AddLabel("Cor do FOV"):AddColorPicker("AimFOVColor", {
 
 local BlackBox = Tabs.Aimbot:AddRightGroupbox("Skill Blacklist")
 BlackBox:AddLabel("Marque o que NÃO deve usar o aimbot", true)
-BlackBox:AddDropdown("SkillBlacklist", {
-    Values = { "M1", "Z", "X", "C", "V", "F" },
-    Multi = true, Text = "Ataques ignorados",
-})
+BlackBox:AddToggle("BL_M1", { Text = "Ignorar M1", Default = false })
+BlackBox:AddToggle("BL_Z", { Text = "Ignorar Z", Default = false })
+BlackBox:AddToggle("BL_X", { Text = "Ignorar X", Default = false })
+BlackBox:AddToggle("BL_C", { Text = "Ignorar C", Default = false })
+BlackBox:AddToggle("BL_V", { Text = "Ignorar V", Default = false })
+BlackBox:AddToggle("BL_F", { Text = "Ignorar F", Default = false })
 
 local AimState = { active = false, pos = nil, part = nil, toolOk = true }
 
@@ -400,34 +402,18 @@ if not FOVCircle then
 end
 
 -- Blacklist
-local blacklistKeys, blacklistM1 = {}, false
+local BL = {
+    { "BL_Z", Enum.KeyCode.Z }, { "BL_X", Enum.KeyCode.X }, { "BL_C", Enum.KeyCode.C },
+    { "BL_V", Enum.KeyCode.V }, { "BL_F", Enum.KeyCode.F },
+}
 local blockedUntil = 0
-local function rebuildBlacklist()
-    blacklistKeys, blacklistM1 = {}, false
-    local v = O("SkillBlacklist")
-    if type(v) == "table" then
-        for name, on in pairs(v) do
-            if on then
-                if name == "M1" then
-                    blacklistM1 = true
-                else
-                    local ok, kc = pcall(function() return Enum.KeyCode[name] end)
-                    if ok and kc then table.insert(blacklistKeys, kc) end
-                end
-            end
-        end
-    end
-end
-Options.SkillBlacklist:OnChanged(rebuildBlacklist)
-rebuildBlacklist()
 
 local function skillBlocked()
-    if #blacklistKeys == 0 and not blacklistM1 then return false end
     if tick() < blockedUntil then return true end
-    for _, kc in ipairs(blacklistKeys) do
-        if UserInputService:IsKeyDown(kc) then return true end
+    for _, e in ipairs(BL) do
+        if T(e[1]) and UserInputService:IsKeyDown(e[2]) then return true end
     end
-    if blacklistM1 and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
+    if T("BL_M1") and UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then
         return true
     end
     return false
@@ -435,10 +421,10 @@ end
 
 bind(UserInputService.InputBegan, function(input)
     if input.UserInputType == Enum.UserInputType.Keyboard then
-        for _, kc in ipairs(blacklistKeys) do
-            if input.KeyCode == kc then blockedUntil = tick() + 0.7 end
+        for _, e in ipairs(BL) do
+            if T(e[1]) and input.KeyCode == e[2] then blockedUntil = tick() + 0.7 end
         end
-    elseif input.UserInputType == Enum.UserInputType.MouseButton1 and blacklistM1 then
+    elseif input.UserInputType == Enum.UserInputType.MouseButton1 and T("BL_M1") then
         blockedUntil = tick() + 0.4
     end
 end, "Blacklist")
@@ -552,53 +538,6 @@ local spyNames = {
 local aimRemoteNames = { ["RemoteEvent"] = true, ["RE/ShootGunEvent"] = true }
 
 local oldIndex, oldNamecall
-local hooksOk = false
-if hookmetamethod and newcclosure and checkcaller and getnamecallmethod then
-    hooksOk = pcall(function()
-        oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
-            if AimState.active and AimState.toolOk and self == Mouse and not checkcaller() then
-                if key == "Hit" or key == "Target" then
-                    if not skillBlocked() then
-                        if key == "Hit" then
-                            return CFrame.new(AimState.pos)
-                        else
-                            return AimState.part
-                        end
-                    end
-                end
-            end
-            return oldIndex(self, key)
-        end))
-
-        oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
-            local method = getnamecallmethod()
-            if (method == "FireServer" or method == "InvokeServer") and not checkcaller() then
-                local name = self.Name
-                if T("RemoteSpy") and spyNames[name] then
-                    spyLog[#spyLog + 1] = { name = name, method = method, args = table.pack(...) }
-                    if #spyLog > 40 then table.remove(spyLog, 1) end
-                end
-                if AimState.active and AimState.toolOk and aimRemoteNames[name] and not skillBlocked() then
-                    local args = table.pack(...)
-                    for i = 1, args.n do
-                        if typeof(args[i]) == "Vector3" then
-                            args[i] = AimState.pos
-                            break
-                        end
-                    end
-                    if setnamecallmethod then setnamecallmethod(method) end
-                    return oldNamecall(self, table.unpack(args, 1, args.n))
-                end
-                if setnamecallmethod then setnamecallmethod(method) end
-            end
-            return oldNamecall(self, ...)
-        end))
-    end)
-end
-if not hooksOk then
-    Library:Notify("Seu executor não suporta hooks; o aimbot só funciona pelo Camera Lock.", 8)
-end
-
 --------------------------------------------------------------------
 -- COMBAT
 --------------------------------------------------------------------
@@ -1277,5 +1216,58 @@ SaveManager:SetFolder("BiosHub/BloxFruits")
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
 SaveManager:LoadAutoloadConfig()
+
+-- Hooks do aimbot (por ultimo, para nunca atrapalhar a criacao do menu)
+local okHooks, errHooks = pcall(function()
+local hooksOk = false
+if hookmetamethod and newcclosure and checkcaller and getnamecallmethod then
+    hooksOk = pcall(function()
+        oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
+            if AimState.active and AimState.toolOk and self == Mouse and not checkcaller() then
+                if key == "Hit" or key == "Target" then
+                    if not skillBlocked() then
+                        if key == "Hit" then
+                            return CFrame.new(AimState.pos)
+                        else
+                            return AimState.part
+                        end
+                    end
+                end
+            end
+            return oldIndex(self, key)
+        end))
+
+        oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+            local method = getnamecallmethod()
+            if (method == "FireServer" or method == "InvokeServer") and not checkcaller() then
+                local name = self.Name
+                if T("RemoteSpy") and spyNames[name] then
+                    spyLog[#spyLog + 1] = { name = name, method = method, args = table.pack(...) }
+                    if #spyLog > 40 then table.remove(spyLog, 1) end
+                end
+                if AimState.active and AimState.toolOk and aimRemoteNames[name] and not skillBlocked() then
+                    local args = table.pack(...)
+                    for i = 1, args.n do
+                        if typeof(args[i]) == "Vector3" then
+                            args[i] = AimState.pos
+                            break
+                        end
+                    end
+                    if setnamecallmethod then setnamecallmethod(method) end
+                    return oldNamecall(self, table.unpack(args, 1, args.n))
+                end
+                if setnamecallmethod then setnamecallmethod(method) end
+            end
+            return oldNamecall(self, ...)
+        end))
+    end)
+end
+if not hooksOk then
+    Library:Notify("Seu executor não suporta hooks; o aimbot só funciona pelo Camera Lock.", 8)
+end
+
+
+end)
+if not okHooks then report("Hooks", errHooks) end
 
 Library:Notify("Bios Hub carregado!", 5)
