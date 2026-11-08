@@ -14,6 +14,7 @@ local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
 local SoundService = game:GetService("SoundService")
+local GuiService = game:GetService("GuiService")
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
 
@@ -187,6 +188,12 @@ MoveBox:AddSlider("FlySpeed", {
     Text = "Fly Speed", Default = 80, Min = 10, Max = 400, Rounding = 0,
 })
 MoveBox:AddToggle("InfSoru", { Text = "Infinite Soru", Default = false })
+MoveBox:AddSlider("SoruDelay", {
+    Text = "Delay do Soru (s)", Default = 1, Min = 0, Max = 3, Rounding = 1,
+})
+MoveBox:AddToggle("WalkWater", { Text = "Walk on Water", Default = false })
+MoveBox:AddToggle("WalkLava", { Text = "Walk on Lava", Default = false })
+MoveBox:AddToggle("Unbreakable", { Text = "Unbreakable Skills (anti-stun)", Default = false })
 
 bind(RunService.Heartbeat, function(dt)
     local hum, root = getHum(), getRoot()
@@ -320,19 +327,125 @@ Toggles.InfSoru:OnChanged(function()
     end
 end)
 
+local soruState = setmetatable({}, { __mode = "k" })
 local lastSoruSearch = 0
-loop("InfSoru", 0.1, function()
-    if T("InfSoru") then
-        if #soruTables == 0 and tick() - lastSoruSearch > 3 then
-            lastSoruSearch = tick()
-            pcall(findSoru)
-        end
-        for _, tbl in ipairs(soruTables) do
-            pcall(function() tbl.LastUse = 0 end)
-        end
+loop("InfSoru", 0.05, function()
+    if not T("InfSoru") then return end
+    if #soruTables == 0 and tick() - lastSoruSearch > 3 then
+        lastSoruSearch = tick()
+        pcall(findSoru)
+    end
+    local delay = O("SoruDelay") or 1
+    for _, tbl in ipairs(soruTables) do
+        pcall(function()
+            local st = soruState[tbl]
+            if not st then
+                st = { seen = tbl.LastUse, usedAt = nil }
+                soruState[tbl] = st
+            end
+            local lu = tbl.LastUse
+            -- detecta quando o Soru foi usado e libera de novo depois do delay
+            if lu ~= nil and lu ~= 0 and lu ~= st.seen then
+                st.seen = lu
+                st.usedAt = tick()
+            end
+            if st.usedAt and tick() - st.usedAt >= delay then
+                tbl.LastUse = 0
+                st.seen = 0
+                st.usedAt = nil
+            end
+        end)
     end
 end)
 bind(LocalPlayer.CharacterAdded, function() soruTables = {} end, "SoruChar")
+
+-- Walk on Water / Lava (plataforma invisivel sob os pes)
+local surfPlat
+local lavaTouched = {}
+local function hidePlat()
+    if surfPlat then
+        pcall(function() surfPlat:Destroy() end)
+        surfPlat = nil
+    end
+end
+local function restoreLava()
+    for part, old in pairs(lavaTouched) do
+        if part and part.Parent then part.CanTouch = old end
+    end
+    lavaTouched = {}
+end
+local function isLavaPart(part)
+    if not part or not part:IsA("BasePart") then return false end
+    if part.Name:lower():find("lava") then return true end
+    return part.Material == Enum.Material.CrackedLava or part.Material == Enum.Material.Magma
+end
+local function isWaterHit(res)
+    if res.Material == Enum.Material.Water then return true end
+    local n = res.Instance and res.Instance.Name:lower() or ""
+    return n:find("water") ~= nil
+end
+
+bind(RunService.Heartbeat, function()
+    local wantW, wantL = T("WalkWater"), T("WalkLava")
+    if not wantW and not wantL then
+        if surfPlat then hidePlat() end
+        if next(lavaTouched) then restoreLava() end
+        return
+    end
+    local root, char = getRoot(), getChar()
+    if not root or not char then return end
+
+    local params = RaycastParams.new()
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    params.FilterDescendantsInstances = surfPlat and { char, surfPlat } or { char }
+    params.IgnoreWater = false
+    local res = workspace:Raycast(root.Position, Vector3.new(0, -50, 0), params)
+
+    local topY
+    if res then
+        if wantW and isWaterHit(res) then
+            topY = res.Position.Y
+        elseif wantL and isLavaPart(res.Instance) then
+            topY = res.Position.Y + 2 -- flutua um pouco acima da lava
+            if lavaTouched[res.Instance] == nil then
+                lavaTouched[res.Instance] = res.Instance.CanTouch
+                res.Instance.CanTouch = false
+            end
+        end
+    end
+
+    if topY then
+        if not surfPlat or not surfPlat.Parent then
+            surfPlat = Instance.new("Part")
+            surfPlat.Name = "BiosPlatform"
+            surfPlat.Anchored = true
+            surfPlat.CanCollide = true
+            surfPlat.CanQuery = false
+            surfPlat.Transparency = 1
+            surfPlat.Size = Vector3.new(24, 1, 24)
+            surfPlat.Parent = workspace
+        end
+        surfPlat.CFrame = CFrame.new(root.Position.X, topY - 0.5, root.Position.Z)
+    else
+        hidePlat()
+    end
+end, "SurfaceWalk")
+
+-- Unbreakable Skills: tira stun/ragdoll para a skill nao ser interrompida
+bind(RunService.Heartbeat, function()
+    if not T("Unbreakable") then return end
+    local char, hum = getChar(), getHum()
+    if not char or not hum then return end
+    local stun = char:FindFirstChild("Stun")
+    if stun and stun:IsA("ValueBase") and stun.Value ~= 0 then
+        pcall(function() stun.Value = 0 end)
+    end
+    pcall(function()
+        hum:SetStateEnabled(Enum.HumanoidStateType.Ragdoll, false)
+        hum:SetStateEnabled(Enum.HumanoidStateType.FallingDown, false)
+    end)
+    if hum.PlatformStand and not T("Fly") then hum.PlatformStand = false end
+end, "Unbreakable")
 
 --------------------------------------------------------------------
 -- AIMBOT
@@ -360,6 +473,8 @@ AimBox:AddSlider("AimMaxDist", {
 AimBox:AddSlider("AimPrediction", {
     Text = "Previsão de movimento", Default = 0, Min = 0, Max = 0.5, Rounding = 2,
 })
+AimBox:AddToggle("AimSticky", { Text = "Manter alvo travado", Default = true })
+AimBox:AddToggle("AimFaceSkill", { Text = "Virar para o alvo ao usar skill", Default = true })
 AimBox:AddToggle("CameraLock", { Text = "Camera Lock (puxa a câmera)", Default = false })
 AimBox:AddSlider("CameraSmooth", {
     Text = "Suavização da câmera", Default = 0.5, Min = 0, Max = 0.95, Rounding = 2,
@@ -447,6 +562,32 @@ bind(UserInputService.InputBegan, function(input)
     end
 end, "Blacklist")
 
+local faceUntil = 0
+local FACE_KEYS = { Z = true, X = true, C = true, V = true, F = true }
+bind(UserInputService.InputBegan, function(input)
+    if not T("AimFaceSkill") or UserInputService:GetFocusedTextBox() then return end
+    if input.UserInputType == Enum.UserInputType.Keyboard and FACE_KEYS[input.KeyCode.Name] then
+        if not T("BL_" .. input.KeyCode.Name) then
+            faceUntil = tick() + 0.5
+        end
+    end
+end, "FaceSkill")
+
+local lockedModel
+
+local function evalModel(model, partName, cam, mousePos, myRoot, maxDist)
+    if not model or not model.Parent then return nil end
+    local hum = model:FindFirstChildOfClass("Humanoid")
+    local part = model:FindFirstChild(partName) or model:FindFirstChild("HumanoidRootPart")
+    if not hum or not part or hum.Health <= 0 then return nil end
+    local worldDist = myRoot and (myRoot.Position - part.Position).Magnitude or 0
+    if worldDist > maxDist then return nil end
+    local sp, onScreen = cam:WorldToViewportPoint(part.Position)
+    if not onScreen then return nil end
+    local d = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
+    return { model = model, part = part, hum = hum, d = d, dist = worldDist }
+end
+
 local function findTarget()
     local cam = Cam()
     if not cam then return nil end
@@ -457,34 +598,32 @@ local function findTarget()
     local prio = O("AimPriority") or "Menor vida"
     local myRoot = getRoot()
 
+    -- continua no mesmo alvo enquanto ele estiver valido (evita falhar na troca de alvo)
+    if T("AimSticky") and lockedModel then
+        local r = evalModel(lockedModel, partName, cam, mousePos, myRoot, maxDist)
+        if r and r.d <= radius * 1.6 then return r end
+        lockedModel = nil
+    end
+
     local best, bestScore
     for _, model in ipairs(getModels(T("TargetPlayers"), T("TargetNPCs"))) do
-        local hum = model:FindFirstChildOfClass("Humanoid")
-        local part = model:FindFirstChild(partName) or model:FindFirstChild("HumanoidRootPart")
-        if hum and part and hum.Health > 0 then
-            local worldDist = myRoot and (myRoot.Position - part.Position).Magnitude or 0
-            if worldDist <= maxDist then
-                local sp, onScreen = cam:WorldToViewportPoint(part.Position)
-                if onScreen then
-                    local d = (Vector2.new(sp.X, sp.Y) - mousePos).Magnitude
-                    if d <= radius then
-                        local score
-                        if prio == "Menor vida" then
-                            score = hum.Health + d / 100000
-                        elseif prio == "Mais perto do cursor" then
-                            score = d
-                        else
-                            score = worldDist
-                        end
-                        if not bestScore or score < bestScore then
-                            bestScore = score
-                            best = { model = model, part = part, hum = hum }
-                        end
-                    end
-                end
+        local r = evalModel(model, partName, cam, mousePos, myRoot, maxDist)
+        if r and r.d <= radius then
+            local score
+            if prio == "Menor vida" then
+                score = r.hum.Health + r.d / 100000
+            elseif prio == "Mais perto do cursor" then
+                score = r.d
+            else
+                score = r.dist
+            end
+            if not bestScore or score < bestScore then
+                bestScore = score
+                best = r
             end
         end
     end
+    if best then lockedModel = best.model end
     return best
 end
 
@@ -521,6 +660,7 @@ RunService:BindToRenderStep("BiosAimbot", Enum.RenderPriority.Camera.Value + 1, 
         end
         if not on then
             AimState.active = false
+            lockedModel = nil
             setStatus("Alvo: aimbot desligado")
             return
         end
@@ -537,6 +677,22 @@ RunService:BindToRenderStep("BiosAimbot", Enum.RenderPriority.Camera.Value + 1, 
         AimState.part = t.part
         AimState.toolOk = toolAllowsAim()
         AimState.active = true
+        local cam2 = Cam()
+        local sp2 = cam2:WorldToViewportPoint(AimState.pos)
+        AimState.cam = cam2
+        AimState.camPos = cam2.CFrame.Position
+        AimState.sp = Vector2.new(sp2.X, sp2.Y)
+        AimState.inset = GuiService:GetGuiInset()
+
+        if tick() < faceUntil and AimState.toolOk and not T("Fly") then
+            local r = getRoot()
+            if r then
+                local flat = Vector3.new(AimState.pos.X, r.Position.Y, AimState.pos.Z)
+                if (flat - r.Position).Magnitude > 0.5 then
+                    r.CFrame = CFrame.lookAt(r.Position, flat)
+                end
+            end
+        end
         setStatus(string.format("Alvo: %s (%d HP)", t.model.Name, math.floor(t.hum.Health)))
 
         if AimLine and T("AimLine") then
@@ -687,6 +843,69 @@ FastBox:AddButton("Copiar log do Remote Spy", function()
     else
         Library:Notify("Seu executor não tem setclipboard.", 4)
     end
+end)
+
+local DragonBox = Tabs.Combat:AddLeftGroupbox("Dragonstorm M1")
+DragonBox:AddToggle("DragonM1", { Text = "Dragonstorm Fast M1", Default = false })
+DragonBox:AddSlider("DragonDelay", {
+    Text = "Delay (segundos)", Default = 0.1, Min = 0.02, Max = 1, Rounding = 2,
+})
+DragonBox:AddSlider("DragonRange", {
+    Text = "Alcance", Default = 150, Min = 20, Max = 500, Rounding = 0,
+})
+DragonBox:AddToggle("DragonAnyGun", { Text = "Usar em qualquer arma", Default = false })
+local DragonStatus = DragonBox:AddLabel("Status: desligado")
+
+local function isDragonTool(tool)
+    local n = tool.Name:lower():gsub("%s", "")
+    return n:find("dragonstorm") ~= nil
+end
+
+loop("DragonM1", function() return math.max(O("DragonDelay") or 0.1, 0.02) end, function()
+    if not T("DragonM1") then
+        DragonStatus:SetText("Status: desligado")
+        return
+    end
+    local c, root = getChar(), getRoot()
+    local tool = c and c:FindFirstChildOfClass("Tool")
+    if not tool or not root then
+        DragonStatus:SetText("Status: equipe o Dragonstorm")
+        return
+    end
+    if not (isDragonTool(tool) or (T("DragonAnyGun") and tool.ToolTip == "Gun")) then
+        DragonStatus:SetText("Status: equipe o Dragonstorm")
+        return
+    end
+
+    -- alvo: o do aimbot, senao o mais perto no alcance
+    local targetPart
+    if AimState.active and AimState.part and AimState.part.Parent then
+        targetPart = AimState.part
+    else
+        local range, bestD = O("DragonRange") or 150, nil
+        for _, m in ipairs(getModels(T("FastPlayers"), T("FastNPCs"))) do
+            local hum = m:FindFirstChildOfClass("Humanoid")
+            local part = m:FindFirstChild("HumanoidRootPart")
+            if hum and part and hum.Health > 0 then
+                local d = (part.Position - root.Position).Magnitude
+                if d <= range and (not bestD or d < bestD) then
+                    bestD, targetPart = d, part
+                end
+            end
+        end
+    end
+    if not targetPart then
+        DragonStatus:SetText("Status: sem alvo no alcance")
+        return
+    end
+
+    local net = getNet()
+    local SG = net and net:FindFirstChild("RE/ShootGunEvent")
+    if SG then
+        SG:FireServer(targetPart.Position, { targetPart })
+    end
+    pcall(function() tool:Activate() end)
+    DragonStatus:SetText("Status: atirando em " .. tostring(targetPart.Parent and targetPart.Parent.Name))
 end)
 
 local HitBox = Tabs.Combat:AddRightGroupbox("Hitbox")
@@ -867,24 +1086,43 @@ local espCache = {}
 local function clearESPEntry(obj)
     local e = espCache[obj]
     if e then
-        if e.hl then e.hl:Destroy() end
-        if e.bb then e.bb:Destroy() end
+        if e.hl then pcall(function() e.hl:Destroy() end) end
+        if e.bb then pcall(function() e.bb:Destroy() end) end
         espCache[obj] = nil
     end
 end
+
+local function espPart(adornee)
+    if adornee:IsA("Model") then
+        return adornee:FindFirstChild("Head") or adornee:FindFirstChild("HumanoidRootPart") or adornee.PrimaryPart
+    end
+    return adornee:FindFirstChildWhichIsA("BasePart", true)
+end
+
 local function makeESP(obj, adornee, label, colorOption, extra)
+    local part = espPart(adornee)
+    if not part then
+        clearESPEntry(obj)
+        return
+    end
     local e = espCache[obj]
+    -- se o personagem morreu/renasceu, os objetos antigos sumiram: recria
+    if e and (e.adornee ~= adornee or e.part ~= part or not e.hl.Parent or not e.bb.Parent) then
+        clearESPEntry(obj)
+        e = nil
+    end
     if not e then
-        e = {}
+        e = { adornee = adornee, part = part }
         e.hl = Instance.new("Highlight")
+        e.hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
         e.hl.Adornee = adornee
         e.hl.Parent = adornee
         e.bb = Instance.new("BillboardGui")
         e.bb.Size = UDim2.new(0, 220, 0, 48)
         e.bb.AlwaysOnTop = true
-        e.bb.StudsOffset = Vector3.new(0, 3.5, 0)
-        e.bb.Adornee = adornee
-        e.bb.Parent = adornee
+        e.bb.StudsOffset = Vector3.new(0, 3, 0)
+        e.bb.Adornee = part
+        e.bb.Parent = part
         e.txt = Instance.new("TextLabel")
         e.txt.Size = UDim2.fromScale(1, 1)
         e.txt.BackgroundTransparency = 1
@@ -900,9 +1138,7 @@ local function makeESP(obj, adornee, label, colorOption, extra)
     e.txt.TextColor3 = col
     e.bb.Enabled = T("NameESP") and true or false
     local root = getRoot()
-    local part = adornee:IsA("Model") and (adornee:FindFirstChild("HumanoidRootPart") or adornee.PrimaryPart)
-        or adornee:FindFirstChildWhichIsA("BasePart", true)
-    local dist = (root and part) and math.floor((root.Position - part.Position).Magnitude) or 0
+    local dist = root and math.floor((root.Position - part.Position).Magnitude) or 0
     local text = string.format("%s [%dm]", label, dist)
     if extra and extra ~= "" then text = text .. "\n" .. extra end
     e.txt.Text = text
@@ -912,17 +1148,25 @@ loop("ESP", 0.5, function()
     local seen = {}
     if T("PlayerESP") then
         for _, p in ipairs(Players:GetPlayers()) do
-            if p ~= LocalPlayer and p.Character then
+            local ch = p.Character
+            if p ~= LocalPlayer and ch and ch.Parent then
                 seen[p] = true
-                local parts = {}
-                if T("BountyESP") then
-                    local b = getBounty(p)
-                    table.insert(parts, "Bounty: " .. (b and fmtNum(b) or "?"))
+                -- cada jogador em pcall: um erro em um nao derruba o ESP dos outros
+                local ok, err = pcall(function()
+                    local parts = {}
+                    if T("BountyESP") then
+                        local b = getBounty(p)
+                        table.insert(parts, "Bounty: " .. (b and fmtNum(b) or "?"))
+                    end
+                    if T("PvpESP") then
+                        table.insert(parts, "PvP: " .. getPvp(p))
+                    end
+                    makeESP(p, ch, p.Name, "PlayerESPColor", table.concat(parts, " | "))
+                end)
+                if not ok then
+                    clearESPEntry(p)
+                    report("ESP", err)
                 end
-                if T("PvpESP") then
-                    table.insert(parts, "PvP: " .. getPvp(p))
-                end
-                makeESP(p, p.Character, p.Name, "PlayerESPColor", table.concat(parts, " | "))
             end
         end
     end
@@ -930,7 +1174,11 @@ loop("ESP", 0.5, function()
         for _, obj in ipairs(workspace:GetChildren()) do
             if obj:IsA("Tool") and obj.Name:find("Fruit") then
                 seen[obj] = true
-                makeESP(obj, obj, obj.Name, "FruitESPColor")
+                local ok, err = pcall(makeESP, obj, obj, obj.Name, "FruitESPColor")
+                if not ok then
+                    clearESPEntry(obj)
+                    report("FruitESP", err)
+                end
             end
         end
     end
@@ -1225,6 +1473,8 @@ Library.ToggleKeybind = Options.MenuKeybind
 
 Library:OnUnload(function()
     cleanFly()
+    hidePlat()
+    restoreLava()
     pcall(function() RunService:UnbindFromRenderStep("BiosAimbot") end)
     AimState.active = false
     if FOVCircle then pcall(function() FOVCircle:Remove() end) end
@@ -1256,12 +1506,18 @@ if hookmetamethod and newcclosure and checkcaller and getnamecallmethod then
     hooksOk = pcall(function()
         oldIndex = hookmetamethod(game, "__index", newcclosure(function(self, key)
             if AimState.active and AimState.toolOk and self == Mouse and not checkcaller() then
-                if key == "Hit" or key == "Target" then
+                if key == "Hit" or key == "Target" or key == "UnitRay" or key == "X" or key == "Y" then
                     if not skillBlocked() then
                         if key == "Hit" then
                             return CFrame.new(AimState.pos)
-                        else
+                        elseif key == "Target" then
                             return AimState.part
+                        elseif key == "UnitRay" then
+                            return Ray.new(AimState.camPos, (AimState.pos - AimState.camPos).Unit)
+                        elseif key == "X" then
+                            return AimState.sp.X
+                        else
+                            return AimState.sp.Y - AimState.inset.Y
                         end
                     end
                 end
@@ -1271,25 +1527,43 @@ if hookmetamethod and newcclosure and checkcaller and getnamecallmethod then
 
         oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
             local method = getnamecallmethod()
-            if (method == "FireServer" or method == "InvokeServer") and not checkcaller() then
-                local name = self.Name
-                if T("RemoteSpy") and spyNames[name] then
-                    spyLog[#spyLog + 1] = { name = name, method = method, args = table.pack(...) }
-                    if #spyLog > 40 then table.remove(spyLog, 1) end
-                end
-                if AimState.active and AimState.toolOk and aimRemoteNames[name] and not skillBlocked() then
-                    local args = table.pack(...)
-                    for i = 1, args.n do
-                        if typeof(args[i]) == "Vector3" then
-                            args[i] = AimState.pos
-                            break
+            if not checkcaller() then
+                if method == "FireServer" or method == "InvokeServer" then
+                    local name = self.Name
+                    local par = self.Parent
+                    local isTool = par ~= nil and par.ClassName == "Tool"
+                    if T("RemoteSpy") and (spyNames[name] or isTool) then
+                        spyLog[#spyLog + 1] = { name = name, method = method, args = table.pack(...) }
+                        if #spyLog > 40 then table.remove(spyLog, 1) end
+                    end
+                    if AimState.active and AimState.toolOk and (isTool or aimRemoteNames[name]) and not skillBlocked() then
+                        local args = table.pack(...)
+                        for i = 1, args.n do
+                            local ty = typeof(args[i])
+                            if ty == "Vector3" then
+                                args[i] = AimState.pos
+                                break
+                            elseif ty == "CFrame" then
+                                args[i] = CFrame.new(AimState.pos)
+                                break
+                            end
+                        end
+                        if setnamecallmethod then setnamecallmethod(method) end
+                        return oldNamecall(self, table.unpack(args, 1, args.n))
+                    end
+                elseif AimState.active and AimState.toolOk and AimState.sp then
+                    if (method == "ViewportPointToRay" or method == "ScreenPointToRay") and self == AimState.cam then
+                        if not skillBlocked() then
+                            return Ray.new(AimState.camPos, (AimState.pos - AimState.camPos).Unit)
+                        end
+                    elseif method == "GetMouseLocation" and self == UserInputService then
+                        if not skillBlocked() then
+                            return AimState.sp
                         end
                     end
-                    if setnamecallmethod then setnamecallmethod(method) end
-                    return oldNamecall(self, table.unpack(args, 1, args.n))
                 end
-                if setnamecallmethod then setnamecallmethod(method) end
             end
+            if setnamecallmethod then setnamecallmethod(method) end
             return oldNamecall(self, ...)
         end))
     end)
